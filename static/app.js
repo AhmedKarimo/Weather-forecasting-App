@@ -23,6 +23,8 @@ const state = {
     theme: localStorage.getItem("neutweather-theme") || "light",
     activeSuggestionIndex: -1,
     suggestions: [],
+    favorites: [],
+    recentSearches: [],
     currentQuery: { city: "Cairo,EG", days: "3" },
     currentLocationLabel: "Cairo,EG",
     currentData: null,
@@ -35,26 +37,6 @@ function escapeHtml(value) {
     return div.innerHTML;
 }
 
-function readStorage(key) {
-    try {
-        return JSON.parse(localStorage.getItem(key)) || [];
-    } catch {
-        return [];
-    }
-}
-
-function writeStorage(key, value) {
-    localStorage.setItem(key, JSON.stringify(value));
-}
-
-function getFavorites() {
-    return readStorage("neutweather-favorites");
-}
-
-function getRecentSearches() {
-    return readStorage("neutweather-recent");
-}
-
 function showStatus(message, type = "loading") {
     statusBox.textContent = message;
     statusBox.className = `status-card ${type}`;
@@ -65,37 +47,25 @@ function hideStatus() {
 }
 
 function formatTemperature(value) {
-    if (value === null || value === undefined || Number.isNaN(Number(value))) {
-        return "--";
-    }
-
+    if (value === null || value === undefined || Number.isNaN(Number(value))) return "--";
     const celsius = Number(value);
     const displayValue = state.unit === "F" ? (celsius * 9) / 5 + 32 : celsius;
     return `${Math.round(displayValue)}°${state.unit}`;
 }
 
 function formatMetric(value, suffix = "") {
-    if (value === null || value === undefined || value === "") {
-        return "--";
-    }
+    if (value === null || value === undefined || value === "") return "--";
     return `${value}${suffix}`;
 }
 
 function parseForecastDate(item) {
-    if (item.date_time) {
-        return new Date(item.date_time.replace(" ", "T"));
-    }
-
-    if (item.timestamp) {
-        return new Date(Number(item.timestamp) * 1000);
-    }
-
+    if (item.date_time) return new Date(item.date_time.replace(" ", "T"));
+    if (item.timestamp) return new Date(Number(item.timestamp) * 1000);
     return new Date();
 }
 
 function weatherSymbol(condition = "") {
     const value = condition.toLowerCase();
-
     if (value.includes("thunder")) return "⛈";
     if (value.includes("snow")) return "❄";
     if (value.includes("rain") || value.includes("drizzle")) return "🌧";
@@ -115,6 +85,21 @@ function timeLabel(date) {
 
 function dateKey(date) {
     return date.toISOString().slice(0, 10);
+}
+
+function normalizeLabel(value) {
+    return String(value || "").replace(/\s+/g, "").toLowerCase();
+}
+
+function recordLabel(record) {
+    return record.country_code ? `${record.city},${record.country_code}` : record.city;
+}
+
+function splitCityLabel(value) {
+    const parts = value.split(",");
+    const city = (parts.shift() || "").trim();
+    const countryCode = parts.length ? parts.pop().trim().toUpperCase() : "";
+    return { city, country_code: countryCode };
 }
 
 function closeSuggestions() {
@@ -140,7 +125,6 @@ function renderSuggestions() {
         closeSuggestions();
         return;
     }
-
     suggestionsBox.innerHTML = state.suggestions
         .map((item, index) => {
             const value = `${item.city},${item.code}`;
@@ -152,10 +136,8 @@ function renderSuggestions() {
             `;
         })
         .join("");
-
     suggestionsBox.classList.remove("hidden");
     state.activeSuggestionIndex = -1;
-
     suggestionsBox.querySelectorAll(".suggestion-item").forEach((item) => {
         item.addEventListener("click", () => selectSuggestion(item.dataset.value));
     });
@@ -163,33 +145,23 @@ function renderSuggestions() {
 
 async function fetchSuggestions(query) {
     const value = query.trim();
-
     if (!value) {
         closeSuggestions();
         return;
     }
-
-    if (state.suggestionController) {
-        state.suggestionController.abort();
-    }
-
+    if (state.suggestionController) state.suggestionController.abort();
     state.suggestionController = new AbortController();
-
     try {
         const params = new URLSearchParams({ q: value, limit: "8" });
         const response = await fetch(`/cities?${params.toString()}`, {
             signal: state.suggestionController.signal,
         });
-
         if (!response.ok) return;
-
         const data = await response.json();
         state.suggestions = data.suggestions || [];
         renderSuggestions();
     } catch (error) {
-        if (error.name !== "AbortError") {
-            closeSuggestions();
-        }
+        if (error.name !== "AbortError") closeSuggestions();
     }
 }
 
@@ -205,25 +177,17 @@ const debouncedSuggestions = debounce(fetchSuggestions);
 
 function groupDailyForecast(items) {
     const groups = new Map();
-
     items.forEach((item) => {
         const date = parseForecastDate(item);
         const key = dateKey(date);
-
-        if (!groups.has(key)) {
-            groups.set(key, []);
-        }
-
+        if (!groups.has(key)) groups.set(key, []);
         groups.get(key).push(item);
     });
-
     return [...groups.entries()].map(([key, values]) => {
         const temperatures = values
             .map((item) => Number(item.temperature_c))
             .filter((value) => !Number.isNaN(value));
-
         const representative = values[Math.floor(values.length / 2)] || values[0];
-
         return {
             date: new Date(`${key}T12:00:00`),
             condition: representative.condition,
@@ -236,7 +200,6 @@ function groupDailyForecast(items) {
 function renderCurrent(item) {
     const condition = item.condition || "Weather update";
     const visibilityKm = item.visibility_m ? (Number(item.visibility_m) / 1000).toFixed(1) : null;
-
     currentCard.innerHTML = `
         <div class="current-main">
             <span class="weather-symbol" aria-hidden="true">${weatherSymbol(condition)}</span>
@@ -251,7 +214,6 @@ function renderCurrent(item) {
             <span>Visibility ${visibilityKm ? `${visibilityKm} km` : "--"}</span>
         </div>
     `;
-
     document.getElementById("humidity-value").textContent = formatMetric(item.humidity, "%");
     document.getElementById("wind-value").textContent = formatMetric(item.wind_speed, " m/s");
     document.getElementById("pressure-value").textContent = formatMetric(item.pressure_hpa, " hPa");
@@ -259,9 +221,7 @@ function renderCurrent(item) {
 }
 
 function renderDaily(items) {
-    const daily = groupDailyForecast(items);
-
-    dailyGrid.innerHTML = daily
+    dailyGrid.innerHTML = groupDailyForecast(items)
         .map((item) => `
             <article class="daily-card">
                 <span class="card-day">${escapeHtml(dayLabel(item.date))}</span>
@@ -290,60 +250,11 @@ function renderHourly(items) {
         .join("");
 }
 
-function renderDashboard(data) {
-    const items = data.forecast || [];
-    const current = items[0];
-
-    if (!current) {
-        throw new Error("No weather entries were returned for this city.");
-    }
-
-    const location = data.country ? `${data.city}, ${data.country}` : data.city;
-    state.currentLocationLabel = location;
-    state.currentData = data;
-
-    locationTitle.textContent = location;
-    updatedAt.textContent = `Updated ${new Date(data.generated_at).toLocaleString()}`;
-    forecastCount.textContent = `${data.forecast_count} forecast entries`;
-
-    renderCurrent(current);
-    renderDaily(items);
-    renderHourly(items);
-    renderCollections();
-    updateFavoriteButton();
-
-    dashboard.classList.remove("hidden");
-}
-
-function addRecentSearch(city) {
-    const recent = getRecentSearches().filter((item) => item.toLowerCase() !== city.toLowerCase());
-    recent.unshift(city);
-    writeStorage("neutweather-recent", recent.slice(0, 6));
-}
-
 function updateFavoriteButton() {
-    const favorites = getFavorites();
-    const isFavorite = favorites.some(
-        (item) => item.toLowerCase() === state.currentQuery.city.toLowerCase()
+    const isFavorite = state.favorites.some(
+        (item) => normalizeLabel(recordLabel(item)) === normalizeLabel(state.currentQuery.city)
     );
-
     favoriteButton.textContent = isFavorite ? "★ Saved city" : "☆ Save city";
-}
-
-function toggleFavorite() {
-    const city = state.currentQuery.city;
-    const favorites = getFavorites();
-    const index = favorites.findIndex((item) => item.toLowerCase() === city.toLowerCase());
-
-    if (index >= 0) {
-        favorites.splice(index, 1);
-    } else {
-        favorites.unshift(city);
-    }
-
-    writeStorage("neutweather-favorites", favorites.slice(0, 8));
-    updateFavoriteButton();
-    renderCollections();
 }
 
 function createSearchChip(city) {
@@ -357,9 +268,10 @@ function renderCollection(container, values, emptyText) {
 }
 
 function renderCollections() {
-    renderCollection(favoritesList, getFavorites(), "Save useful cities for faster access.");
-    renderCollection(recentList, getRecentSearches(), "Your recent searches will appear here.");
-
+    const favoriteLabels = state.favorites.map(recordLabel);
+    const historyLabels = [...new Set(state.recentSearches.map(recordLabel))].slice(0, 6);
+    renderCollection(favoritesList, favoriteLabels, "Save useful cities for faster access.");
+    renderCollection(recentList, historyLabels, "Your recent searches will appear here.");
     document.querySelectorAll("[data-search-city]").forEach((button) => {
         button.addEventListener("click", () => {
             cityInput.value = button.dataset.searchCity;
@@ -368,26 +280,87 @@ function renderCollections() {
     });
 }
 
+async function fetchCollections() {
+    try {
+        const [favoritesResponse, historyResponse] = await Promise.all([
+            fetch("/favorites?limit=20"),
+            fetch("/history?limit=10"),
+        ]);
+        if (favoritesResponse.ok) state.favorites = await favoritesResponse.json();
+        if (historyResponse.ok) state.recentSearches = await historyResponse.json();
+        renderCollections();
+        updateFavoriteButton();
+    } catch {
+        // The dashboard remains usable even if the collections fail to load.
+    }
+}
+
+function renderDashboard(data) {
+    const items = data.forecast || [];
+    const current = items[0];
+    if (!current) throw new Error("No weather entries were returned for this city.");
+    const location = data.country ? `${data.city}, ${data.country}` : data.city;
+    state.currentLocationLabel = location;
+    state.currentData = data;
+    locationTitle.textContent = location;
+    updatedAt.textContent = `Updated ${new Date(data.generated_at).toLocaleString()}`;
+    forecastCount.textContent = `${data.forecast_count} forecast entries`;
+    renderCurrent(current);
+    renderDaily(items);
+    renderHourly(items);
+    updateFavoriteButton();
+    dashboard.classList.remove("hidden");
+}
+
+async function toggleFavorite() {
+    const existing = state.favorites.find(
+        (item) => normalizeLabel(recordLabel(item)) === normalizeLabel(state.currentQuery.city)
+    );
+    try {
+        if (existing) {
+            const response = await fetch(`/favorites/${existing.id}`, { method: "DELETE" });
+            if (!response.ok) throw new Error("Unable to remove the favorite city.");
+        } else {
+            const payload = splitCityLabel(state.currentQuery.city);
+            const response = await fetch("/favorites", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload),
+            });
+            if (!response.ok) {
+                const error = await response.json();
+                throw new Error(error.detail || "Unable to save the favorite city.");
+            }
+        }
+        await fetchCollections();
+    } catch (error) {
+        showStatus(error.message, "error");
+    }
+}
+
+async function clearHistory() {
+    try {
+        const response = await fetch("/history", { method: "DELETE" });
+        if (!response.ok) throw new Error("Unable to clear search history.");
+        await fetchCollections();
+    } catch (error) {
+        showStatus(error.message, "error");
+    }
+}
+
 async function loadForecast(city, days) {
     const normalizedCity = city.trim();
-
     if (!normalizedCity) return;
-
     closeSuggestions();
     showStatus("Loading the latest weather forecast...", "loading");
-
     try {
         const params = new URLSearchParams({ city: normalizedCity, days: String(days) });
         const response = await fetch(`/forecast?${params.toString()}`);
         const data = await response.json();
-
-        if (!response.ok) {
-            throw new Error(data.detail || "Unable to load this forecast.");
-        }
-
+        if (!response.ok) throw new Error(data.detail || "Unable to load this forecast.");
         state.currentQuery = { city: normalizedCity, days: String(days) };
-        addRecentSearch(normalizedCity);
         renderDashboard(data);
+        await fetchCollections();
         hideStatus();
     } catch (error) {
         showStatus(error.message, "error");
@@ -409,28 +382,21 @@ function toggleUnit() {
     state.unit = state.unit === "C" ? "F" : "C";
     localStorage.setItem("neutweather-unit", state.unit);
     unitToggle.textContent = `°${state.unit}`;
-
-    if (state.currentData) {
-        renderDashboard(state.currentData);
-    }
+    if (state.currentData) renderDashboard(state.currentData);
 }
 
 form.addEventListener("submit", (event) => {
     event.preventDefault();
     loadForecast(cityInput.value, daysInput.value);
 });
-
 cityInput.addEventListener("input", () => debouncedSuggestions(cityInput.value));
-
 cityInput.addEventListener("keydown", (event) => {
     if (suggestionsBox.classList.contains("hidden")) return;
-
     if (event.key === "ArrowDown") {
         event.preventDefault();
         state.activeSuggestionIndex = (state.activeSuggestionIndex + 1) % state.suggestions.length;
         highlightSuggestion();
     }
-
     if (event.key === "ArrowUp") {
         event.preventDefault();
         state.activeSuggestionIndex = state.activeSuggestionIndex <= 0
@@ -438,41 +404,29 @@ cityInput.addEventListener("keydown", (event) => {
             : state.activeSuggestionIndex - 1;
         highlightSuggestion();
     }
-
     if (event.key === "Enter" && state.activeSuggestionIndex >= 0) {
         event.preventDefault();
         const item = state.suggestions[state.activeSuggestionIndex];
         selectSuggestion(`${item.city},${item.code}`);
     }
-
-    if (event.key === "Escape") {
-        closeSuggestions();
-    }
+    if (event.key === "Escape") closeSuggestions();
 });
-
 document.addEventListener("click", (event) => {
-    if (!event.target.closest(".autocomplete")) {
-        closeSuggestions();
-    }
+    if (!event.target.closest(".autocomplete")) closeSuggestions();
 });
-
 document.querySelectorAll("[data-city]").forEach((button) => {
     button.addEventListener("click", () => {
         cityInput.value = button.dataset.city;
         loadForecast(button.dataset.city, daysInput.value);
     });
 });
-
 favoriteButton.addEventListener("click", toggleFavorite);
 refreshButton.addEventListener("click", () => loadForecast(state.currentQuery.city, state.currentQuery.days));
-clearHistoryButton.addEventListener("click", () => {
-    writeStorage("neutweather-recent", []);
-    renderCollections();
-});
+clearHistoryButton.addEventListener("click", clearHistory);
 unitToggle.addEventListener("click", toggleUnit);
 themeToggle.addEventListener("click", toggleTheme);
 
 applyTheme();
 unitToggle.textContent = `°${state.unit}`;
-renderCollections();
-loadForecast("Cairo,EG", 3);
+fetchCollections();
+// Disabled to protect RapidAPI quota: loadForecast("Cairo,EG", 3);
