@@ -1,4 +1,11 @@
 .env
 .git
-__pycache__
+venv/
+.venv/
+__pycache__/
 *.pyc
+.pytest_cache/
+*.db
+.upgrade-backup-*/
+.upgrade-backups/
+compose-backup/
