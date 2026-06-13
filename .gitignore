@@ -1,2 +1,23 @@
+# Secrets
 .env
+.env.local.backup
+
+# Python
+venv/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Local databases
+*.db
+
+# Local backups
+.upgrade-backup-*/
 .upgrade-backups/
+compose-backup/
+
+# Editor and OS files
+.vscode/
+.idea/
+.DS_Store
