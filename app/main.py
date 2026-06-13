@@ -20,7 +20,12 @@ from app.schemas import (
     SearchHistoryRead,
     SearchHistoryUpdate,
 )
-from app.weather import RapidApiRateLimitError, WeatherProviderError, get_forecast
+from app.weather import (
+    RapidApiRateLimitError,
+    WeatherProviderError,
+    get_cache_status,
+    get_forecast,
+)
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -181,6 +186,12 @@ def home() -> FileResponse:
 @app.get("/health", tags=["System"])
 def health() -> dict[str, str]:
     return {"status": "healthy", "service": "neutweather-api"}
+
+
+@app.get("/cache/health", tags=["System"])
+def cache_health() -> dict[str, Any]:
+    """Show whether Redis or the in-memory fallback is serving cache requests."""
+    return get_cache_status()
 
 
 @app.get("/cities", tags=["Cities"])

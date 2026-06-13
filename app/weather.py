@@ -1,9 +1,13 @@
+import hashlib
+import json
 import os
 import time
 from threading import Lock
 from typing import Any
 
+import redis
 import requests
+from redis.exceptions import RedisError
 from requests import Response
 from requests.exceptions import RequestException
 
@@ -45,6 +49,35 @@ COORDINATE_CACHE_TTL_SECONDS = int(
     os.getenv("WEATHER_COORDINATE_CACHE_TTL_SECONDS", "86400")
 )
 
+REDIS_URL = os.getenv(
+    "REDIS_URL",
+    "redis://redis:6379/0",
+).strip()
+
+REDIS_CACHE_ENABLED = os.getenv(
+    "REDIS_CACHE_ENABLED",
+    "true",
+).strip().lower() in {"1", "true", "yes", "on"}
+
+REDIS_KEY_PREFIX = os.getenv(
+    "REDIS_KEY_PREFIX",
+    "neutweather",
+).strip() or "neutweather"
+
+
+# Redis is the primary cache. The connection is lazy, so importing this module
+# does not crash the app when Redis is temporarily unavailable.
+_redis_client = redis.Redis.from_url(
+    REDIS_URL,
+    decode_responses=True,
+    socket_connect_timeout=1,
+    socket_timeout=1,
+    health_check_interval=30,
+)
+
+
+# The dictionaries below are a local fallback. The app can still serve requests
+# if Redis is unavailable, but each app container will then have its own cache.
 _forecast_cache: dict[tuple[str, int], tuple[float, dict[str, Any]]] = {}
 _coordinate_cache: dict[str, tuple[float, tuple[float, float]]] = {}
 _cache_lock = Lock()
@@ -172,7 +205,93 @@ def _request_json(endpoint: str, params: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _place_digest(place: str) -> str:
+    """Keep Redis keys compact and avoid special characters in city names."""
+    return hashlib.sha256(place.casefold().encode("utf-8")).hexdigest()[:24]
+
+
+def _redis_key(namespace: str, place: str, days: int | None = None) -> str:
+    key = f"{REDIS_KEY_PREFIX}:{namespace}:{_place_digest(place)}"
+
+    if days is not None:
+        key += f":{days}"
+
+    return key
+
+
+def _redis_get_json(key: str) -> Any | None:
+    if not REDIS_CACHE_ENABLED:
+        return None
+
+    try:
+        raw_value = _redis_client.get(key)
+    except RedisError:
+        return None
+
+    if not raw_value:
+        return None
+
+    try:
+        return json.loads(raw_value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _redis_set_json(key: str, value: Any, ttl_seconds: int) -> None:
+    if not REDIS_CACHE_ENABLED:
+        return
+
+    try:
+        _redis_client.setex(
+            key,
+            ttl_seconds,
+            json.dumps(value),
+        )
+    except RedisError:
+        # Redis is an optimization. A cache outage must not break forecasts.
+        return
+
+
+def get_cache_status() -> dict[str, Any]:
+    """Return cache status for monitoring and local troubleshooting."""
+    if not REDIS_CACHE_ENABLED:
+        return {
+            "backend": "memory",
+            "redis_enabled": False,
+            "redis_connected": False,
+        }
+
+    try:
+        connected = bool(_redis_client.ping())
+    except RedisError:
+        connected = False
+
+    return {
+        "backend": "redis" if connected else "memory-fallback",
+        "redis_enabled": True,
+        "redis_connected": connected,
+        "redis_url": REDIS_URL,
+    }
+
+
 def _get_cached_coordinates(place: str) -> tuple[float, float] | None:
+    redis_value = _redis_get_json(
+        _redis_key("coordinates", place)
+    )
+
+    if (
+        isinstance(redis_value, dict)
+        and redis_value.get("latitude") is not None
+        and redis_value.get("longitude") is not None
+    ):
+        try:
+            return (
+                float(redis_value["latitude"]),
+                float(redis_value["longitude"]),
+            )
+        except (TypeError, ValueError):
+            pass
+
     key = place.casefold()
 
     with _cache_lock:
@@ -195,6 +314,15 @@ def _store_cached_coordinates(
     latitude: float,
     longitude: float,
 ) -> None:
+    _redis_set_json(
+        key=_redis_key("coordinates", place),
+        value={
+            "latitude": latitude,
+            "longitude": longitude,
+        },
+        ttl_seconds=COORDINATE_CACHE_TTL_SECONDS,
+    )
+
     key = place.casefold()
 
     with _cache_lock:
@@ -255,6 +383,13 @@ def _get_cached_forecast(
     place: str,
     days: int,
 ) -> dict[str, Any] | None:
+    redis_value = _redis_get_json(
+        _redis_key("forecast", place, days)
+    )
+
+    if isinstance(redis_value, dict):
+        return redis_value
+
     key = (place.casefold(), days)
 
     with _cache_lock:
@@ -277,6 +412,12 @@ def _store_cached_forecast(
     days: int,
     payload: dict[str, Any],
 ) -> None:
+    _redis_set_json(
+        key=_redis_key("forecast", place, days),
+        value=payload,
+        ttl_seconds=CACHE_TTL_SECONDS,
+    )
+
     key = (place.casefold(), days)
 
     with _cache_lock:
@@ -313,8 +454,8 @@ def get_forecast(place: str, days: int = 3) -> dict[str, Any]:
     """Fetch a forecast by city name while the provider uses coordinates.
 
     Flow:
-        city name -> GET /city -> latitude and longitude
-        coordinates -> GET /fivedaysforcast -> forecast JSON
+        city name -> cache or GET /city -> latitude and longitude
+        coordinates -> cache or GET /fivedaysforcast -> forecast JSON
     """
     _validate_configuration()
 
