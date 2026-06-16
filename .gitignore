@@ -1,6 +1,7 @@
 # Secrets
 .env
 .env.local.backup
+*.secret.yaml
 
 # Python
 venv/

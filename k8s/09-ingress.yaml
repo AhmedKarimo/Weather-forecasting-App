@@ -1,0 +1,21 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: neutweather-ingress
+  namespace: neutweather
+
+spec:
+  ingressClassName: nginx
+
+  rules:
+    - host: neutweather.local
+      http:
+        paths: 
+        - path: /
+          pathType: Prefix
+          backend:
+            service:
+              name: neutweather-service
+              port:
+                number: 80
+
