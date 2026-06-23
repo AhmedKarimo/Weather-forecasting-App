@@ -666,3 +666,4 @@ Warning: deleting the PVC removes the local PostgreSQL data.
 Built by **Ahmed Omar**.
 
 DevOps-focused project demonstrating backend development, containerization, Kubernetes deployment, caching, persistence, and CI/CD automation.
+Updated from local terminal
