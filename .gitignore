@@ -22,3 +22,4 @@ compose-backup/
 .vscode/
 .idea/
 .DS_Store
+terraform/terraform.tfvars
